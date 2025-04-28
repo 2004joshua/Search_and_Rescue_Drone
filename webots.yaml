@@ -1,0 +1,13 @@
+publish: true
+
+# where to find your PROTO definitions
+proto_directories:
+  - protos
+
+# where your extra worlds live
+world_directories:
+  - worlds
+
+# where your C/C++/Python controllers live
+controller_directories:
+  - controllers
