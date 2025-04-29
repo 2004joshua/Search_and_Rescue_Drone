@@ -134,6 +134,24 @@ class Mavic (Robot):
                 angle_left, distance_left))
         return yaw_disturbance, pitch_disturbance
 
+    def generate_lawnmower(self, min_x, max_x, min_y, max_y, spacing):
+        waypoints = []
+        y = min_y
+        left_to_right = True
+        while y <= max_y:
+            if left_to_right:
+                waypoints.append([min_x, y])
+                waypoints.append([max_x, y])
+            else:
+                waypoints.append([max_x, y])
+                waypoints.append([min_x, y])
+            
+            y += spacing
+            left_to_right = not left_to_right
+        for i in range(len(waypoints)):
+            print("waypoint {}: {}".format(i, waypoints[i]))
+        return waypoints
+    
     def run(self):
         t1 = self.getTime()
 
@@ -142,7 +160,11 @@ class Mavic (Robot):
         yaw_disturbance = 0
 
         # Specify the patrol coordinates
-        waypoints = [[-30, 20], [-60, 20], [-60, 10], [-30, 5]]
+        min_x, max_x = -60, -30
+        min_y, max_y = 5, 20
+        lane_spacing  = 2.0 
+
+        waypoints = self.generate_lawnmower(min_x, max_x, min_y, max_y, lane_spacing)
         # target altitude of the robot in meters
         self.target_altitude = 15
 
