@@ -1,0 +1,62 @@
+        t1 = self.getTime()
+
+        roll_disturbance = 0
+        pitch_disturbance = 0
+        yaw_disturbance = 0
+
+        waypoints = self.generate_lawnmower(
+            self.X_MIN, self.X_MAX,
+            self.Y_MIN, self.Y_MAX,
+            self.LINE_SPACING)
+
+        # target altitude of the robot in meters
+        self.target_altitude = 10
+
+        while self.step(self.time_step) != -1:
+
+            # Read sensors
+            roll, pitch, yaw = self.imu.getRollPitchYaw()
+            x_pos, y_pos, altitude = self.gps.getValues()
+            roll_acceleration, pitch_acceleration, _ = self.gyro.getValues()
+            self.set_position([x_pos, y_pos, altitude, roll, pitch, yaw])
+
+            if altitude > self.target_altitude - 1:
+                # as soon as it reach the target altitude, compute the disturbances to go to the given waypoints.
+                if self.getTime() - t1 > 0.1:
+                    yaw_disturbance, pitch_disturbance = self.move_to_target(
+                        waypoints)
+                    t1 = self.getTime()
+
+            roll_input = self.K_ROLL_P * clamp(roll, -1, 1) + roll_acceleration + roll_disturbance
+            pitch_input = self.K_PITCH_P * clamp(pitch, -1, 1) + pitch_acceleration + pitch_disturbance
+            yaw_input = yaw_disturbance
+            clamped_difference_altitude = clamp(self.target_altitude - altitude + self.K_VERTICAL_OFFSET, -1, 1)
+            vertical_input = self.K_VERTICAL_P * pow(clamped_difference_altitude, 3.0)
+
+            front_left_motor_input = self.K_VERTICAL_THRUST + vertical_input - yaw_input + pitch_input - roll_input
+            front_right_motor_input = self.K_VERTICAL_THRUST + vertical_input + yaw_input + pitch_input + roll_input
+            rear_left_motor_input = self.K_VERTICAL_THRUST + vertical_input + yaw_input - pitch_input - roll_input
+            rear_right_motor_input = self.K_VERTICAL_THRUST + vertical_input - yaw_input - pitch_input + roll_input
+
+            self.front_left_motor.setVelocity(front_left_motor_input)
+            self.front_right_motor.setVelocity(-front_right_motor_input)
+            self.rear_left_motor.setVelocity(-rear_left_motor_input)
+            self.rear_right_motor.setVelocity(rear_right_motor_input)
+
+INFO: scout: Starting controller: /Users/joshuaarrevillaga/Documents/Spring2025/EC535/Project/Search_and_Rescue_Drone/.venv/bin/python -u scout.py
+waypoint 0: [-30, 5]
+waypoint 1: [-60, 5]
+waypoint 2: [-60, 7.0]
+waypoint 3: [-30, 7.0]
+waypoint 4: [-30, 9.0]
+waypoint 5: [-60, 9.0]
+waypoint 6: [-60, 11.0]
+waypoint 7: [-30, 11.0]
+waypoint 8: [-30, 13.0]
+waypoint 9: [-60, 13.0]
+waypoint 10: [-60, 15.0]
+waypoint 11: [-30, 15.0]
+waypoint 12: [-30, 17.0]
+waypoint 13: [-60, 17.0]
+waypoint 14: [-60, 19.0]
+waypoint 15: [-30, 19.0]

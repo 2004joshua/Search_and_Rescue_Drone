@@ -19,6 +19,8 @@
 
 from controller import Robot
 import sys
+import cv2
+
 try:
     import numpy as np
 except ImportError:
@@ -43,14 +45,25 @@ class Mavic (Robot):
     # Precision between the target position and the robot position in meters
     target_precision = 0.5
 
+    X_MAX = -60 
+    X_MIN = -30 
+    Y_MIN = 5
+    Y_MAX = 20 
+
+    LINESPACING = 2.0
+
     def __init__(self):
         Robot.__init__(self)
 
         self.time_step = int(self.getBasicTimeStep())
 
-        # Get and enable devices.
+        # Camera
         self.camera = self.getDevice("camera")
         self.camera.enable(self.time_step)
+        self.camera_width = self.camera.getWidth()
+        self.camera_height = self.camera.getHeight()
+
+        # GPS
         self.imu = self.getDevice("inertial unit")
         self.imu.enable(self.time_step)
         self.gps = self.getDevice("gps")
@@ -58,14 +71,19 @@ class Mavic (Robot):
         self.gyro = self.getDevice("gyro")
         self.gyro.enable(self.time_step)
 
+        # Motors
         self.front_left_motor = self.getDevice("front left propeller")
         self.front_right_motor = self.getDevice("front right propeller")
         self.rear_left_motor = self.getDevice("rear left propeller")
         self.rear_right_motor = self.getDevice("rear right propeller")
+        
+        # Camera pitch motor: Controls camera angle
         self.camera_pitch_motor = self.getDevice("camera pitch")
-        self.camera_pitch_motor.setPosition(0.7)
+        self.camera_pitch_motor.setPosition(0.4)
+        
         motors = [self.front_left_motor, self.front_right_motor,
                   self.rear_left_motor, self.rear_right_motor]
+        
         for motor in motors:
             motor.setPosition(float('inf'))
             motor.setVelocity(1)
@@ -74,6 +92,13 @@ class Mavic (Robot):
         self.target_position = [0, 0, 0]
         self.target_index = 0
         self.target_altitude = 0
+        
+        self.avoidance_mode = False
+        self.clear_counter = 0
+        self.CLEAR_THRESHOLD = 10
+        self.AVOID_THRESHOLD = 1
+        self.obs_counter = 0
+        self.AVOID_BLEND = 0.3
 
     def set_position(self, pos):
         """
@@ -82,6 +107,43 @@ class Mavic (Robot):
             pos (list): [X,Y,Z,yaw,pitch,roll] current absolute position and angles
         """
         self.current_pose = pos
+
+    def get_frame(self):
+        """
+        Grab the current camera image from Webots and return
+        it as a HxWx3 numpy array.
+        """
+        raw_image = self.camera.getImage()
+        arr = np.frombuffer(raw_image, np.uint8)
+        arr = arr.reshape((self.camera_height, self.camera_width, 4))
+        return arr[:, :, :3]  # Discard the alpha channel
+    
+    def detect_obstacle(self, img):
+        """
+        Given a BGR image, detect if theres an obstacle
+        Returns: 
+            (has_obstacle: bool, avoid_yaw: float, avoid_pitch: float)
+        """
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, (0,100,100), (10,255,255))
+
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not cnts:
+            return False, 0.0, 0.0
+        
+        c = max(cnts, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(c)
+        center_x = x + w // 2
+
+        if center_x < self.camera_width * 0.4:
+            yaw_offset, pitch_offset = +0.3, 0.0
+        elif center_x > self.camera_width * 0.6:
+            yaw_offset, pitch_offset = -0.3, 0.0
+        else:
+            yaw_offset, pitch_offset = 0.0, 0.3
+        
+        return True, yaw_offset, pitch_offset
 
     def move_to_target(self, waypoints, verbose_movement=False, verbose_target=False):
         """
@@ -155,49 +217,91 @@ class Mavic (Robot):
     def run(self):
         t1 = self.getTime()
 
-        roll_disturbance = 0
-        pitch_disturbance = 0
-        yaw_disturbance = 0
+        waypoints = self.generate_lawnmower(
+            self.X_MIN, self.X_MAX,
+            self.Y_MIN, self.Y_MAX,
+            self.LINESPACING)
 
-        # Specify the patrol coordinates
-        min_x, max_x = -60, -30
-        min_y, max_y = 5, 20
-        lane_spacing  = 2.0 
-
-        waypoints = self.generate_lawnmower(min_x, max_x, min_y, max_y, lane_spacing)
         # target altitude of the robot in meters
-        self.target_altitude = 15
-
+        self.target_altitude = 5.0
+        
+        self.idx = 0
+        self.prev_has_obs = False
+	
         while self.step(self.time_step) != -1:
 
-            # Read sensors
+            # 1) Read sensors
             roll, pitch, yaw = self.imu.getRollPitchYaw()
             x_pos, y_pos, altitude = self.gps.getValues()
+            if self.idx % 100 == 0:
+                print(f"GPS: {x_pos:.2f}, {y_pos:.2f}, {altitude:.2f} | IMU: {roll:.2f}, {pitch:.2f}, {yaw:.2f}")
             roll_acceleration, pitch_acceleration, _ = self.gyro.getValues()
             self.set_position([x_pos, y_pos, altitude, roll, pitch, yaw])
+                 
+            # 3) Vertical PID (always on)
+            vertical_error = self.target_altitude - altitude + self.K_VERTICAL_OFFSET
+            vertical_input = self.K_VERTICAL_P * pow(clamp(vertical_error, -1, 1), 3.0)
 
-            if altitude > self.target_altitude - 1:
-                # as soon as it reach the target altitude, compute the disturbances to go to the given waypoints.
+            # reset steering inputs
+            yaw_input = 0.0
+            pitch_nav_input = 0.0
+            yaw_disturbance = 0.0
+            pitch_disturbance = 0.0
+
+            # 4) Only nav once we're at height
+            if altitude > self.target_altitude - 1.0:
                 if self.getTime() - t1 > 0.1:
-                    yaw_disturbance, pitch_disturbance = self.move_to_target(
-                        waypoints)
+                    NAV_GAIN = 5.0
+                    yaw_disturbance, pitch_disturbance = self.move_to_target(waypoints)
+                    yaw_disturbance = NAV_GAIN * yaw_disturbance
+                    pitch_disturbance = NAV_GAIN * pitch_disturbance
                     t1 = self.getTime()
+                    
+				# 2) Always get camera frame & detect
+                frame = self.get_frame()
+                has_obs, avoid_yaw, avoid_pitch = self.detect_obstacle(frame)
+                if self.idx % 100 == 0 and has_obs != self.prev_has_obs:
+                    print(f"detect_obstacle → has_obs={has_obs}, yaw_off={avoid_yaw:.2f}, pitch_off={avoid_pitch:.2f}")
+                    self.prev_has_obs = has_obs
+				
+                if has_obs:
+                    self.obs_counter += 1
+                    self.clear_counter = 0
+                else:
+                    self.clear_counter += 1
+                    self.obs_counter = 0
+            
+                if not self.avoidance_mode and self.obs_counter >= self.AVOID_THRESHOLD:
+                    print("Obstacle detected, entering avoidance mode")
+                    self.avoidance_mode = True
+                elif self.avoidance_mode and self.clear_counter >= self.CLEAR_THRESHOLD:
+                    print("Obstacle cleared, exiting avoidance mode")
+                    self.avoidance_mode = False
+                
+				# blend nav + avoidance
+                if self.avoidance_mode:
+                    yaw_input   = yaw_disturbance + avoid_yaw * self.AVOID_BLEND
+                    pitch_nav_input = pitch_disturbance + avoid_pitch * self.AVOID_BLEND
+                else:
+                    yaw_input   = yaw_disturbance
+                    pitch_nav_input = pitch_disturbance
 
-            roll_input = self.K_ROLL_P * clamp(roll, -1, 1) + roll_acceleration + roll_disturbance
-            pitch_input = self.K_PITCH_P * clamp(pitch, -1, 1) + pitch_acceleration + pitch_disturbance
-            yaw_input = yaw_disturbance
-            clamped_difference_altitude = clamp(self.target_altitude - altitude + self.K_VERTICAL_OFFSET, -1, 1)
-            vertical_input = self.K_VERTICAL_P * pow(clamped_difference_altitude, 3.0)
+            # 5) Roll/Pitch stabilization
+            roll_input  = self.K_ROLL_P  * clamp(roll,  -1, 1) + roll_acceleration
+            pitch_stab  = self.K_PITCH_P * clamp(pitch, -1, 1) + pitch_acceleration
 
-            front_left_motor_input = self.K_VERTICAL_THRUST + vertical_input - yaw_input + pitch_input - roll_input
-            front_right_motor_input = self.K_VERTICAL_THRUST + vertical_input + yaw_input + pitch_input + roll_input
-            rear_left_motor_input = self.K_VERTICAL_THRUST + vertical_input + yaw_input - pitch_input - roll_input
-            rear_right_motor_input = self.K_VERTICAL_THRUST + vertical_input - yaw_input - pitch_input + roll_input
+            # 6) Mix into motors
+            fl = self.K_VERTICAL_THRUST + vertical_input - yaw_input + pitch_nav_input - roll_input
+            fr = self.K_VERTICAL_THRUST + vertical_input + yaw_input + pitch_nav_input + roll_input
+            rl = self.K_VERTICAL_THRUST + vertical_input + yaw_input - pitch_stab - roll_input
+            rr = self.K_VERTICAL_THRUST + vertical_input - yaw_input - pitch_stab + roll_input
 
-            self.front_left_motor.setVelocity(front_left_motor_input)
-            self.front_right_motor.setVelocity(-front_right_motor_input)
-            self.rear_left_motor.setVelocity(-rear_left_motor_input)
-            self.rear_right_motor.setVelocity(rear_right_motor_input)
+            # 7) Send commands
+            self.front_left_motor .setVelocity(fl)
+            self.front_right_motor.setVelocity(-fr)
+            self.rear_left_motor  .setVelocity(-rl)
+            self.rear_right_motor .setVelocity(rr)
+            self.idx += 1
 
 
 # To use this controller, the basicTimeStep should be set to 8 and the defaultDamping
