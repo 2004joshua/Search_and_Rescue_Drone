@@ -1,0 +1,14 @@
+# build outputs
+/build/
+/logs/
+
+# Python venv
+/mavproxy-venv/
+
+# Webots cache (optional)
+/controllers/*/worlds/.cache
+
+# OS / editor cruft
+*.pyc
+__pycache__/
+*.swp
