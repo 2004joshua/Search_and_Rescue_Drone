@@ -37,7 +37,6 @@ sys.path.append(f"{WEBOTS_HOME}/lib/controller/python")
 
 from controller import Robot, Camera, RangeFinder # noqa: E401, E402
 
-
 class WebotsArduVehicle():
     """Class representing an ArduPilot controlled Webots Vehicle"""
 
@@ -114,6 +113,12 @@ class WebotsArduVehicle():
         self.imu.enable(self._timestep)
         self.gyro.enable(self._timestep)
         self.gps.enable(self._timestep)
+
+        # --- START RSSI SIDE-CHANNEL SETUP ---   ← NEW
+        # open a UDP socket to broadcast RSSI readings
+        self._rssi_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._rssi_addr = ("127.0.0.1", 9999)     # companion script should bind here
+        # --- END RSSI SIDE-CHANNEL SETUP ---     ← NEW
 
         # init camera
         if camera_name is not None:
@@ -206,6 +211,13 @@ class WebotsArduVehicle():
                 while self.receiver.getQueueLength() > 0:
                     self.last_rssi = self.receiver.getSignalStrength()
                     print(f"RSSI @ {self.robot.getTime():.2f}s = {self.last_rssi}")
+                    # ← NEW: send it over UDP to companion
+                    try:
+                        # msg = f"{self.last_rssi:.2f}".encode('utf-8')
+                        msg = f"{self.last_rssi:.9f}".encode('utf-8')
+                        self._rssi_sock.sendto(msg, self._rssi_addr)
+                    except Exception as e:
+                        print(f"Failed to send RSSI UDP: {e}")
                     self.receiver.nextPacket()
                 # --- END READ BLOCK ---  # <--- ADDED BLOCK
 
