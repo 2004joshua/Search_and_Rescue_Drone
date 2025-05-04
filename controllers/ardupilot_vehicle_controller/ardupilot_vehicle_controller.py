@@ -32,7 +32,7 @@ def get_args():
                         help="Whether the vehicle uses propellers. This is important as we need to linearize thrust if so")
     parser.add_argument("--motor-cap",
                         type=float,
-                        default=100.0,
+                        default=float('inf'),
                         help="Motor velocity cap. This is useful for the crazyflie which default has way too much power")
 
     parser.add_argument("--accel",

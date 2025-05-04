@@ -145,6 +145,14 @@ class WebotsArduVehicle():
             m.setPosition(float('inf'))
             m.setVelocity(0)
 
+        # --- START RECEIVER SETUP ---
+        # grab and enable the beacon receiver you added in the world
+        self.receiver = self.robot.getDevice("beacon_receiver")
+        print("got device:", self.receiver, "of type", type(self.receiver))
+        self.receiver.enable(self._timestep)
+        self.last_rssi = None
+        # --- END RECEIVER SETUP ---
+
         # start ArduPilot SITL communication thread
         self._sitl_thread = Thread(daemon=True, target=self._handle_sitl, args=[sitl_address, 9002+10*instance])
         self._sitl_thread.start()
@@ -162,7 +170,7 @@ class WebotsArduVehicle():
         s.bind(('0.0.0.0', port))
 
         # wait for SITL to connect
-        print(f"Listening for ardupilot SITL (I{self._instance}) at {sitl_address}:{port}")
+        print(f"Listening for ardupilot SITL (I{self._instance}) at 127.0.0.1:{port}")
         self.robot.step(self._timestep) # flush print in webots console
 
         while not select.select([s], [], [], 0)[0]: # wait for socket to be readable
@@ -193,6 +201,13 @@ class WebotsArduVehicle():
                 # parse a single struct
                 command = struct.unpack(self.controls_struct_format, data[:self.controls_struct_size])
                 self._handle_controls(command)
+
+                # --- READ BEACON RECEIVER QUEUE ---  # <--- ADDED BLOCK
+                while self.receiver.getQueueLength() > 0:
+                    self.last_rssi = self.receiver.getSignalStrength()
+                    print(f"RSSI @ {self.robot.getTime():.2f}s = {self.last_rssi}")
+                    self.receiver.nextPacket()
+                # --- END READ BLOCK ---  # <--- ADDED BLOCK
 
                 # wait until the next Webots time step as no new sensor data will be available until then
                 step_success = self.robot.step(self._timestep)
