@@ -184,35 +184,27 @@ class WebotsArduVehicle():
 
         # main loop handling communications
         while True:
-            # check if the socket is ready to send/receive
+            if self.robot.step(self._timestep) == -1: # webots closed
+                break
+
             readable, writable, _ = select.select([s], [s], [], 0)
-
-            # send data to SITL port (one lower than its output port as seen in SITL_cmdline.cpp)
-            if writable:
-                fdm_struct = self._get_fdm_struct()
-                s.sendto(fdm_struct, (sitl_address, port+1))
-
-            # receive data from SITL port
+            if writable: 
+                s.sendto(self._get_fdm_struct(), (sitl_address, port+1))
             if readable:
                 data = s.recv(512)
-                if not data or len(data) < self.controls_struct_size:
-                    continue
+                if len(data) >= self.controls_struct_size:
+                    cmd = struct.unpack(self.controls_struct_format, data[:self.controls_struct_size])
+                    self._handle_controls(cmd)
 
-                # parse a single struct
-                command = struct.unpack(self.controls_struct_format, data[:self.controls_struct_size])
-                self._handle_controls(command)
+            # --- START RECEIVER SETUP ---
+            got_any = False
+            while self.receiver.getQueueLength() > 0:
+                self.last_rssi = self.receiver.getSignalStrength()
+                self.receiver.nextPacket()
+                got_any = True
 
-                # --- READ BEACON RECEIVER QUEUE ---  # <--- ADDED BLOCK
-                while self.receiver.getQueueLength() > 0:
-                    self.last_rssi = self.receiver.getSignalStrength()
-                    print(f"RSSI @ {self.robot.getTime():.2f}s = {self.last_rssi}")
-                    self.receiver.nextPacket()
-                # --- END READ BLOCK ---  # <--- ADDED BLOCK
-
-                # wait until the next Webots time step as no new sensor data will be available until then
-                step_success = self.robot.step(self._timestep)
-                if step_success == -1: # webots closed
-                    break
+            print(f"t={self.robot.getTime():.2f}s  RSSI={self.last_rssi:.10f}  "
+                f"{'(new)' if got_any else '(stale)'}")
 
         # if we leave the main loop then Webots must have closed
         s.close()

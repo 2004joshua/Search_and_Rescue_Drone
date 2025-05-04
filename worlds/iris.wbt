@@ -24,7 +24,7 @@ TexturedBackground {
 TexturedBackgroundLight {
 }
 Floor {
-  size 300 100
+  size 400 400
   appearance Grass {
   }
 }
@@ -58,6 +58,15 @@ Iris {
   controllerArgs [
     "--motors"
     "m1_motor, m2_motor, m3_motor, m4_motor"
+  ]
+  children [
+    GPS {                     
+      referenceLatitude  -35.363696
+      referenceLongitude 149.163653
+    }
+    Compass {
+      name "compass"
+    }
   ]
   extensionSlot [
     Receiver {
