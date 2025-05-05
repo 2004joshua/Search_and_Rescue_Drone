@@ -12,3 +12,10 @@
 *.pyc
 __pycache__/
 *.swp
+
+/worlds/.iris.wbproj
+
+eeprom.bin
+mav.parm
+mav.tlog
+mav.tlog.raw

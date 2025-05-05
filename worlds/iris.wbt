@@ -59,6 +59,15 @@ Iris {
     "--motors"
     "m1_motor, m2_motor, m3_motor, m4_motor"
   ]
+  children [
+    GPS {                     
+      referenceLatitude  -35.363696
+      referenceLongitude 149.163653
+    }
+    Compass {
+      name "compass"
+    }
+  ]
   extensionSlot [
     Receiver {
        name    "beacon_receiver"
