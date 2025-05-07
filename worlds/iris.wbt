@@ -24,7 +24,7 @@ TexturedBackground {
 TexturedBackgroundLight {
 }
 Floor {
-  size 300 100
+  size 400 400
   appearance Grass {
   }
 }
@@ -81,7 +81,7 @@ Robot {
   name        "Beacon"
   controller  "beacon_controller"       # or "beacon_controller.py"
   controllerArgs [ ]                # dummy args so it can reuse webots_vehicle.py
-  translation 20 10 0.5
+  translation 110 70 0.5
   children [
     Emitter {
       name     "beacon_emitter"

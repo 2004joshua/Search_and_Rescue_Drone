@@ -163,23 +163,17 @@ class WebotsArduVehicle():
         self._sitl_thread.start()
 
     def _handle_sitl(self, sitl_address: str = "127.0.0.1", port: int = 9002):
-        """Handles all communications with the ArduPilot SITL
-
-        Args:
-            port (int, optional): Port to listen for SITL on. Defaults to 9002.
-        """
-
-        # create a local UDP socket server to listen for SITL
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # SOCK_STREAM
+        """Handles all communications with the ArduPilot SITL and
+        relays throttled RSSI packets to the companion."""
+        # set up local UDP server for SITL
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(('0.0.0.0', port))
 
-        # wait for SITL to connect
+        # wait for first packet from SITL
         print(f"Listening for ardupilot SITL (I{self._instance}) at 127.0.0.1:{port}")
-        self.robot.step(self._timestep) # flush print in webots console
-
-        while not select.select([s], [], [], 0)[0]: # wait for socket to be readable
-            # if webots is closed, close the socket and exit
+        self.robot.step(self._timestep)
+        while not select.select([s], [], [], 0)[0]:
             if self.robot.step(self._timestep) == -1:
                 s.close()
                 self._webots_connected = False
@@ -187,50 +181,48 @@ class WebotsArduVehicle():
 
         print(f"Connected to ardupilot SITL (I{self._instance})")
 
-        # main loop handling communications
+        send_idx = 0
         while True:
-            # check if the socket is ready to send/receive
+            # can we send / recv?
             readable, writable, _ = select.select([s], [s], [], 0)
 
-            # send data to SITL port (one lower than its output port as seen in SITL_cmdline.cpp)
+            # 1) send FDM→SITL
             if writable:
-                fdm_struct = self._get_fdm_struct()
-                s.sendto(fdm_struct, (sitl_address, port+1))
+                fdm = self._get_fdm_struct()
+                s.sendto(fdm, (sitl_address, port+1))
 
-            # receive data from SITL port
+            # 2) recv controls from SITL
             if readable:
                 data = s.recv(512)
                 if not data or len(data) < self.controls_struct_size:
                     continue
+                cmd = struct.unpack(self.controls_struct_format,
+                                    data[:self.controls_struct_size])
+                self._handle_controls(cmd)
 
-                # parse a single struct
-                command = struct.unpack(self.controls_struct_format, data[:self.controls_struct_size])
-                self._handle_controls(command)
-
-                # --- READ BEACON RECEIVER QUEUE ---  # <--- ADDED BLOCK
+                # 3) read all queued RSSI packets, but only forward 1/10
                 while self.receiver.getQueueLength() > 0:
                     self.last_rssi = self.receiver.getSignalStrength()
-                    print(f"RSSI @ {self.robot.getTime():.2f}s = {self.last_rssi}")
-                    # ← NEW: send it over UDP to companion
-                    try:
-                        # msg = f"{self.last_rssi:.2f}".encode('utf-8')
+                    send_idx += 1
+                    if send_idx % 20 == 0:
                         msg = f"{self.last_rssi:.9f}".encode('utf-8')
-                        self._rssi_sock.sendto(msg, self._rssi_addr)
-                    except Exception as e:
-                        print(f"Failed to send RSSI UDP: {e}")
+                        print(f"Sending RSSI UDP: {msg}")
+                        try:
+                            self._rssi_sock.sendto(msg, self._rssi_addr)
+                        except Exception as e:
+                            print(f"Failed to send RSSI UDP: {e}")
                     self.receiver.nextPacket()
-                # --- END READ BLOCK ---  # <--- ADDED BLOCK
 
-                # wait until the next Webots time step as no new sensor data will be available until then
-                step_success = self.robot.step(self._timestep)
-                if step_success == -1: # webots closed
+                # 4) step simulation
+                if self.robot.step(self._timestep) == -1:
                     break
 
-        # if we leave the main loop then Webots must have closed
+        # clean up
         s.close()
         self._webots_connected = False
         print(f"Lost connection to Webots (I{self._instance})")
 
+            
     def _get_fdm_struct(self) -> bytes:
         """Form the Flight Dynamics Model struct (aka sensor data) to send to the SITL
 
